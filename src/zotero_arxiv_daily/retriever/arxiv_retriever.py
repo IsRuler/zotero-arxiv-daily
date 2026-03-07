@@ -4,37 +4,51 @@ from arxiv import Result as ArxivResult
 from ..protocol import Paper
 from ..utils import extract_markdown_from_pdf
 from tempfile import TemporaryDirectory
-import feedparser
 from urllib.request import urlretrieve
-from tqdm import tqdm
 import os
+from datetime import datetime, timedelta, timezone
 from loguru import logger
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 @register_retriever("arxiv")
 class ArxivRetriever(BaseRetriever):
     def __init__(self, config):
         super().__init__(config)
-        if self.config.source.arxiv.category is None:
+        if self.retriever_config.category is None:
             raise ValueError("category must be specified for arxiv.")
-    def _retrieve_raw_papers(self) -> list[ArxivResult]:
-        client = arxiv.Client(num_retries=10,delay_seconds=10)
-        query = '+'.join(self.config.source.arxiv.category)
-        # Get the latest paper from arxiv rss feed
-        feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
-        if 'Feed error for query' in feed.feed.title:
-            raise Exception(f"Invalid ARXIV_QUERY: {query}.")
-        raw_papers = []
-        all_paper_ids = [i.id.removeprefix("oai:arXiv.org:") for i in feed.entries if i.get("arxiv_announce_type","new") == 'new']
-        if self.config.executor.debug:
-            all_paper_ids = all_paper_ids[:10]
 
-        # Get full information of each paper from arxiv api
-        bar = tqdm(total=len(all_paper_ids))
-        for i in range(0,len(all_paper_ids),20):
-            search = arxiv.Search(id_list=all_paper_ids[i:i+20])
-            batch = list(client.results(search))
-            bar.update(len(batch))
-            raw_papers.extend(batch)
-        bar.close()
+    def _build_query(self) -> str:
+        return " OR ".join(f"cat:{c}" for c in self.retriever_config.category)
+
+    def _retrieve_raw_papers(self) -> list[ArxivResult]:
+        client = arxiv.Client(num_retries=10, delay_seconds=10)
+        query = self._build_query()
+        days_back = int(self.retriever_config.get("days_back", 7))
+        if days_back <= 0:
+            raise ValueError("source.arxiv.days_back must be a positive integer.")
+        cutoff = _utc_now() - timedelta(days=days_back)
+
+        search = arxiv.Search(
+            query=query,
+            max_results=1000,
+            sort_by=arxiv.SortCriterion.SubmittedDate,
+            sort_order=arxiv.SortOrder.Descending,
+        )
+
+        raw_papers = []
+        for paper in client.results(search):
+            published = paper.published
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+            if published < cutoff:
+                break
+            raw_papers.append(paper)
+            if self.config.executor.debug and len(raw_papers) >= 10:
+                break
 
         return raw_papers
 
