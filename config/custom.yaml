@@ -15,12 +15,14 @@ llm:
     key: ${oc.env:OPENAI_API_KEY}
     base_url: ${oc.env:OPENAI_API_BASE}
   generation_kwargs:
-    model: Pro/MiniMaxAI/MiniMax-M2.5
+    model: gpt-4o-mini
 
 source:
   arxiv:
     category: ["cs.AI","cs.CV","cs.LG","cs.CL"]
+    days_back: 1
 
 executor:
   debug: ${oc.env:DEBUG,null}
+  max_paper_num: 5
   source: ['arxiv']
